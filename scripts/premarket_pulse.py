@@ -30,6 +30,9 @@ from pathlib import Path
 import httpx
 import yfinance as yf
 
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from utils.notion_logger import NotionLogger
+
 # ── ANSI colours (no extra deps) ───────────────────────────────────────────
 GREEN  = "\033[92m"
 YELLOW = "\033[93m"
@@ -407,6 +410,21 @@ def main():
 
     print(f"  {verdict}")
     print(f"\n{BOLD}{'═' * W}{RESET}\n")
+
+    # ── Push verdict to Notion ─────────────────────────────────────────────
+    vix_price = quotes["vix"]["price"] if quotes.get("vix") else None
+    notion = NotionLogger()
+    if notion.enabled:
+        notion.log_pulse(
+            verdict=verdict,
+            score=score,
+            vix=vix_price,
+            reasons=reasons,
+            headlines=headlines,
+        )
+        print(f"  {DIM}Pulse verdict synced to Notion.{RESET}\n")
+    else:
+        print(f"  {DIM}Notion not configured — verdict not synced.{RESET}\n")
 
 
 if __name__ == "__main__":
