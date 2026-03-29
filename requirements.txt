@@ -1,0 +1,36 @@
+# Core broker integration
+kiteconnect>=5.0.0
+
+# Data & analysis
+pandas>=2.0.0
+numpy>=1.24.0
+yfinance>=0.2.30
+
+# Technical indicators
+ta>=0.11.0            # Pure Python TA library (no C deps, unlike ta-lib)
+# ta-lib               # Uncomment if you install TA-Lib C library
+
+# WebSocket for live data
+websocket-client>=1.6.0
+
+# Scheduling
+schedule>=1.2.0
+
+# Alerts
+python-telegram-bot>=20.0
+
+# Environment variables
+python-dotenv>=1.0.0
+
+# Database
+# sqlite3 is built-in, no install needed
+
+# HTTP requests (for news feeds, Claude API)
+httpx>=0.25.0
+
+# Logging
+colorlog>=6.7.0
+
+# Visualisation (backtest equity curves, dashboards)
+matplotlib>=3.8.0
+notion-client==2.2.1
