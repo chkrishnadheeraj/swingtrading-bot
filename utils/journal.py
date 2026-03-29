@@ -9,6 +9,7 @@ from typing import Optional
 from config import settings
 from utils.logger import get_logger
 from utils.notion_logger import NotionLogger
+from utils.tax_calculator import net_pnl as calc_net_pnl
 
 logger = get_logger(__name__)
 
@@ -37,6 +38,10 @@ class TradeJournal:
                 quantity INTEGER,
                 pnl REAL,
                 pnl_pct REAL,
+                gross_pnl REAL,
+                total_charges REAL,
+                tax_deducted REAL,
+                net_in_hand REAL,
                 confidence REAL,
                 reason TEXT,
                 exit_reason TEXT,
@@ -47,6 +52,17 @@ class TradeJournal:
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # Migrate existing databases that predate the tax columns
+        for col, coltype in [
+            ("gross_pnl",      "REAL"),
+            ("total_charges",  "REAL"),
+            ("tax_deducted",   "REAL"),
+            ("net_in_hand",    "REAL"),
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {coltype}")
+            except sqlite3.OperationalError:
+                pass  # column already exists
         conn.commit()
         conn.close()
         logger.info(f"Trade journal initialized at {self.db_path}")
@@ -106,24 +122,33 @@ class TradeJournal:
             return
 
         entry_price, quantity, entry_time = row
-        pnl = (exit_price - entry_price) * quantity
+        pnl     = (exit_price - entry_price) * quantity
         pnl_pct = ((exit_price - entry_price) / entry_price) * 100
 
         hold_days = 0
         if entry_time:
             hold_days = (datetime.now() - datetime.fromisoformat(entry_time)).days
 
+        # Tax & charges breakdown
+        tax_data       = calc_net_pnl(entry_price, exit_price, quantity)
+        gross_pnl      = tax_data["gross_pnl"]
+        total_charges  = tax_data["total_charges"]
+        tax_deducted   = tax_data["tax_deducted"]
+        net_in_hand    = tax_data["net_in_hand"]
+
         conn.execute(
             """UPDATE trades SET
                 action = 'CLOSED', exit_price = ?, pnl = ?, pnl_pct = ?,
+                gross_pnl = ?, total_charges = ?, tax_deducted = ?, net_in_hand = ?,
                 exit_reason = ?, exit_time = ?, hold_days = ?
             WHERE id = ?""",
-            (exit_price, pnl, pnl_pct, exit_reason,
-             datetime.now().isoformat(), hold_days, trade_id),
+            (exit_price, pnl, pnl_pct,
+             gross_pnl, total_charges, tax_deducted, net_in_hand,
+             exit_reason, datetime.now().isoformat(), hold_days, trade_id),
         )
         conn.commit()
         conn.close()
-        
+
         # Background sync to Notion
         self.notion.log_exit(
             trade_id=trade_id, exit_price=exit_price, pnl=pnl, pnl_pct=pnl_pct,
@@ -133,7 +158,9 @@ class TradeJournal:
         emoji = "+" if pnl >= 0 else ""
         logger.info(
             f"Journal: EXIT #{trade_id} | @ ₹{exit_price} | "
-            f"P&L: {emoji}₹{pnl:,.0f} ({pnl_pct:+.1f}%) | "
+            f"Gross P&L: {emoji}₹{gross_pnl:,.0f} | Charges: ₹{total_charges:,.0f} | "
+            f"Tax ({tax_data['tax_type']}): ₹{tax_deducted:,.0f} | "
+            f"Net in-hand: ₹{net_in_hand:+,.0f} | "
             f"Held: {hold_days}d | {exit_reason}"
         )
 

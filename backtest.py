@@ -37,6 +37,7 @@ from matplotlib.gridspec import GridSpec
 # ── project imports ────────────────────────────────────────────────────────
 sys.path.insert(0, str(Path(__file__).parent))
 from config import settings
+from utils.tax_calculator import calculate_charges, calculate_tax
 
 # ── constants ──────────────────────────────────────────────────────────────
 # Issue #3 fix: use the full 30-stock watchlist from settings instead of 4 stocks.
@@ -482,6 +483,38 @@ def compute_oos_stats(trades: list) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Tax & charges summary
+# ═══════════════════════════════════════════════════════════════════════════
+
+def compute_tax_summary(trades: list) -> dict:
+    """
+    Aggregates NSE charges + income tax estimate across all completed trades.
+    Returns a dict ready for the console summary and JSON output.
+    """
+    if not trades:
+        return {}
+
+    total_gross    = sum(t.pnl for t in trades)
+    total_charges  = sum(
+        calculate_charges(t.entry_price, t.exit_price, t.quantity)["total_charges"]
+        for t in trades
+    )
+    net_after      = total_gross - total_charges
+    tax_data       = calculate_tax(net_after)
+    net_in_hand    = net_after - tax_data["tax_deducted"]
+
+    return {
+        "gross_pnl":         round(total_gross,             2),
+        "total_charges":     round(total_charges,           2),
+        "net_after_charges": round(net_after,               2),
+        "tax_type":          tax_data["tax_type"],
+        "tax_rate_pct":      round(tax_data["effective_rate"] * 100, 1),
+        "tax_deducted":      tax_data["tax_deducted"],
+        "net_in_hand":       round(net_in_hand,             2),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Plotting — equity curve + trade distribution
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -632,7 +665,7 @@ def print_trade_table(trades: list[Trade]):
     print("─" * len(header))
 
 
-def print_stats(stats: dict):
+def print_stats(stats: dict, tax: dict | None = None):
     print("\n" + "═" * 56)
     print("  📈  BACKTEST RESULTS — 6-Month Momentum Strategy")
     print("═" * 56)
@@ -665,6 +698,18 @@ def print_stats(stats: dict):
             print()
         else:
             print(f"  {k:<22}  {v}")
+
+    if tax:
+        label = f"Income Tax ({tax['tax_type']} {tax['tax_rate_pct']}%)"
+        print()
+        print("  " + "─" * 52)
+        print(f"  {'Gross P&L':<22}  ₹{tax['gross_pnl']:>+12,.0f}")
+        print(f"  {'Total Charges':<22}  ₹{tax['total_charges']:>+12,.0f}  (STT, GST, etc.)")
+        print(f"  {label:<22}  ₹{tax['tax_deducted']:>+12,.0f}  (Estimated)")
+        print("  " + "─" * 52)
+        print(f"  {'NET IN-HAND':<22}  ₹{tax['net_in_hand']:>+12,.0f}  ✅")
+        print("  " + "─" * 52)
+
     print("═" * 56)
 
 
@@ -723,8 +768,9 @@ def main():
               f"OOS ≥ {split_date_str}  ({len(oos_trades)} OOS trades)")
 
     # 5. Print trade table + stats
+    tax_summary = compute_tax_summary(port.trades)
     print_trade_table(port.trades)
-    print_stats(stats)
+    print_stats(stats, tax=tax_summary)
     if oos_stats:
         print(f"\n  Out-of-Sample ({eval_window}d):")
         print(f"    Trades : {oos_stats['total_trades']}")
@@ -744,11 +790,12 @@ def main():
         return d
 
     output = {
-        "stats":      stats,
-        "oos_stats":  oos_stats,
-        "split_date": split_date_str,
-        "trades":     [_trade_to_dict(t) for t in port.trades],
-        "run_at":     datetime.now().isoformat(),
+        "stats":       stats,
+        "oos_stats":   oos_stats,
+        "tax_summary": tax_summary,
+        "split_date":  split_date_str,
+        "trades":      [_trade_to_dict(t) for t in port.trades],
+        "run_at":      datetime.now().isoformat(),
     }
     json_path.write_text(json.dumps(output, indent=2, default=str))
     print(f"💾  Full results saved → {json_path}")
