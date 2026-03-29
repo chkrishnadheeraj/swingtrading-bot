@@ -21,6 +21,8 @@ trading-bot/
 │   ├── base.py              # Abstract strategy interface
 │   ├── momentum.py          # EMA crossover + RSI + volume breakout
 │   └── pairs.py             # Statistical pairs trading (Phase 2)
+├── scripts/
+│   └── autoresearch.py      # Autonomous AI optimisation loop (OOS ratchet)
 ├── utils/
 │   ├── logger.py            # File + console logging
 │   ├── telegram_alert.py    # Trade alerts via Telegram bot
@@ -30,7 +32,9 @@ trading-bot/
 │   └── watchlist.csv        # Stock watchlist with metadata
 ├── logs/                    # Daily log files
 ├── main.py                  # Entry point
-├── paper_trader.py          # Paper trading simulator
+├── backtest.py              # Walk-forward backtester (--eval-window flag)
+├── operations_manual.md     # Daily runbook + AutoResearch usage guide
+├── research_program.md      # LLM system prompt for AutoResearch
 └── requirements.txt         # Python dependencies
 ```
 
@@ -76,6 +80,31 @@ python main.py --mode paper
 # Micro-trade mode (₹3,000 max per position)
 python main.py --mode live --max-position 3000
 ```
+
+### Nightly AutoResearch (Autonomous Optimisation)
+
+```bash
+# Standard overnight run — 200 iterations, OOS ratchet active
+python scripts/autoresearch.py
+
+# Allow logic-level edits to strategies/momentum.py as well
+python scripts/autoresearch.py --allow-strategy-edits
+
+# 50% cost saving via Gemini Batch API (overnight only)
+python scripts/autoresearch.py --batch
+
+# Break through a local maxima with a heavyweight model
+python scripts/autoresearch.py --model anthropic/claude-3-5-sonnet-20241022 --iter 20
+```
+
+The autoresearcher uses a **walk-forward OOS ratchet**: each backtest reserves the last 60 days as held-out data. A hypothesis is only committed when it improves the out-of-sample score — preventing overfitting to historical data.
+
+**Verify the backtest first:**
+```bash
+python backtest.py                  # default (60-day OOS window)
+python backtest.py --eval-window 45 # smaller OOS window
+```
+Confirm `oos_stats` appears in `data/backtest_results.json` before running AutoResearch overnight.
 
 ## Risk Parameters (DO NOT CHANGE until you understand them)
 
