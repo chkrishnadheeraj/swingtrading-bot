@@ -136,6 +136,22 @@ WATCHLIST = [
 ]
 
 # ---------------------------------------------------------------------------
+# Tax & charges configuration (Budget 2024)
+# ---------------------------------------------------------------------------
+TAX_CONFIG = {
+    # Set to "BUSINESS" if you file trading income as Business Income (30% slab).
+    # Set to "STCG" to use Short-Term Capital Gains rate (20% post-Budget 2024).
+    "TAX_TYPE": "BUSINESS",
+
+    "BUSINESS_SLAB": 0.30,   # 30% income tax bracket
+    "STCG_RATE":     0.20,   # 20% STCG (Budget 2024)
+    "CESS_RATE":     0.04,   # 4% Health & Education Cess on tax amount
+
+    # Zerodha delivery brokerage = ₹0. Change if using a different broker.
+    "BROKERAGE_PER_ORDER": 0,
+}
+
+# ---------------------------------------------------------------------------
 # Market timing
 # ---------------------------------------------------------------------------
 MARKET_OPEN = "09:15"    # IST
