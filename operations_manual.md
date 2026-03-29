@@ -79,7 +79,7 @@ This means a hypothesis that memorises the in-sample period will be caught and r
 
 ### 1. Standard Overnight Run (200 iterations, ~₹50–100)
 ```bash
-python scripts/autoresearch.py --model gemini/gemini-1.5-flash
+python scripts/autoresearch.py --model gemini/gemini-2.5-flash-lite
 ```
 - Runs 200 iterations by default.
 - Uses only the `MOMENTUM` dict in its prompt (not the full `settings.py`), saving ~67% in input tokens.
@@ -111,7 +111,7 @@ python scripts/autoresearch.py --model anthropic/claude-3-5-sonnet-20241022 --it
 A healthy run looks like this:
 ```
 --- Iteration 1/200 ---
-Calling gemini/gemini-1.5-flash to generate hypothesis...
+Calling gemini/gemini-2.5-flash-lite to generate hypothesis...
 Running backtest for hypothesis...
 Hypothesis Result:
   OOS score:  88.10  (WR 54%, PF 1.5, Trades 12)

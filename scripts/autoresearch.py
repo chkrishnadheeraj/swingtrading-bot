@@ -263,8 +263,8 @@ def main():
         description="Autonomous AI parameter/logic optimisation loop with OOS ratchet."
     )
     parser.add_argument(
-        "--model", type=str, default="gemini/gemini-1.5-flash",
-        help="LiteLLM model string (default: gemini/gemini-1.5-flash)"
+        "--model", type=str, default="gemini/gemini-2.5-flash-lite",
+        help="LiteLLM model string (default: gemini/gemini-2.5-flash-lite)"
     )
     parser.add_argument(
         "--iter", type=int, default=200,
