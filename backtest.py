@@ -17,6 +17,7 @@ Run:
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from datetime import datetime, timedelta
@@ -442,6 +443,44 @@ def compute_stats(port: Portfolio) -> dict:
     }
 
 
+def compute_oos_stats(trades: list) -> dict:
+    """
+    Compute stats from a list of Trade objects without an equity curve.
+    Used for the out-of-sample window — the autoresearcher ratchet uses
+    this score so the optimizer never touches the evaluation window.
+    """
+    if not trades:
+        return {
+            "total_trades": 0, "win_rate_pct": 0.0,
+            "profit_factor": 0.0, "total_pnl_inr": 0.0,
+            "return_pct": 0.0, "score": 0.0,
+        }
+
+    won  = [t for t in trades if t.won]
+    lost = [t for t in trades if not t.won]
+
+    win_rate     = len(won) / len(trades) * 100
+    gross_profit = sum(t.pnl for t in won)
+    gross_loss   = abs(sum(t.pnl for t in lost))
+    profit_factor = gross_profit / gross_loss if gross_loss > 0 else float("inf")
+    pf_capped    = min(profit_factor if profit_factor != float("inf") else 5.0, 5.0)
+    total_pnl    = sum(t.pnl for t in trades)
+    return_pct   = total_pnl / INITIAL_CAP * 100
+
+    # Same blended score formula as autoresearch.py — with trade-count penalty
+    penalty = min(1.0, len(trades) / 10.0)
+    score   = (win_rate * pf_capped) * penalty
+
+    return {
+        "total_trades":  len(trades),
+        "win_rate_pct":  round(win_rate, 1),
+        "profit_factor": round(profit_factor if profit_factor != float("inf") else 5.0, 2),
+        "total_pnl_inr": round(total_pnl, 2),
+        "return_pct":    round(return_pct, 2),
+        "score":         round(score, 2),
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Plotting — equity curve + trade distribution
 # ═══════════════════════════════════════════════════════════════════════════
@@ -634,11 +673,21 @@ def print_stats(stats: dict):
 # ═══════════════════════════════════════════════════════════════════════════
 
 def main():
+    parser = argparse.ArgumentParser(description="Momentum Strategy Backtester")
+    parser.add_argument(
+        "--eval-window", type=int, default=60,
+        help="Days at the END of the backtest period reserved for out-of-sample scoring. "
+             "The optimizer never sees this window — only used to compute the final OOS score. "
+             "(default: 60)"
+    )
+    args = parser.parse_args()
+    eval_window = args.eval_window
+
     print("\n" + "█" * 56)
     print("  MOMENTUM SWING — 6-MONTH BACKTEST")
     print("█" * 56)
     print(f"  Stocks   : {len(STOCKS)} stocks (full WATCHLIST)")
-    print(f"  Period   : Last {LOOKBACK_D} days")
+    print(f"  Period   : Last {LOOKBACK_D} days  |  OOS window: {eval_window}d")
     print(f"  Capital  : ₹{INITIAL_CAP:,}")
     print(f"  Strategy : EMA {FAST_EMA}/{SLOW_EMA} | Trend EMA({TREND_EMA}) filter")
     print(f"  SL       : {INIT_SL_PCT:.0%} hard | {TRAIL_SL_PCT:.0%} trail (activates at +{TRAIL_ACT:.0%})")
@@ -654,22 +703,39 @@ def main():
     print("\n⚙️   Running backtest …")
     port = run_backtest(data)
 
-    # 3. Stats
+    # 3. Full-period stats
     stats = compute_stats(port)
     if "error" in stats:
         print(f"⚠️  {stats['error']}")
         print("   Possible reasons: not enough trading days, or signals require more price history.")
         sys.exit(0)
 
-    # 4. Print trade table + stats
+    # 4. Walk-forward OOS split — trades entered on/after split_date are out-of-sample
+    all_dates = sorted(set().union(*[set(df.index) for df in data.values()]))
+    oos_stats = {}
+    split_date_str = None
+    if len(all_dates) > eval_window:
+        split_date     = all_dates[-eval_window]
+        split_date_str = str(split_date.date())
+        oos_trades     = [t for t in port.trades if t.entry_date >= split_date_str]
+        oos_stats      = compute_oos_stats(oos_trades)
+        print(f"\n📐  Walk-forward split: in-sample < {split_date_str}  |  "
+              f"OOS ≥ {split_date_str}  ({len(oos_trades)} OOS trades)")
+
+    # 5. Print trade table + stats
     print_trade_table(port.trades)
     print_stats(stats)
+    if oos_stats:
+        print(f"\n  Out-of-Sample ({eval_window}d):")
+        print(f"    Trades : {oos_stats['total_trades']}")
+        print(f"    Win Rate : {oos_stats['win_rate_pct']}%   Profit Factor : {oos_stats['profit_factor']}")
+        print(f"    OOS Return : {oos_stats['return_pct']:+.2f}%   OOS Score : {oos_stats['score']:.2f}")
 
-    # 5. Save equity curve chart
+    # 6. Save equity curve chart
     chart_path = Path("data/backtest_equity_curve.png")
     plot_results(port, stats, chart_path)
 
-    # 6. Save JSON results
+    # 7. Save JSON results
     json_path = Path("data/backtest_results.json")
 
     def _trade_to_dict(t: Trade) -> dict:
@@ -678,9 +744,11 @@ def main():
         return d
 
     output = {
-        "stats": stats,
-        "trades": [_trade_to_dict(t) for t in port.trades],
-        "run_at": datetime.now().isoformat(),
+        "stats":      stats,
+        "oos_stats":  oos_stats,
+        "split_date": split_date_str,
+        "trades":     [_trade_to_dict(t) for t in port.trades],
+        "run_at":     datetime.now().isoformat(),
     }
     json_path.write_text(json.dumps(output, indent=2, default=str))
     print(f"💾  Full results saved → {json_path}")
