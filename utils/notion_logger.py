@@ -5,7 +5,14 @@ Automatically syncs trades to a Notion Database.
 
 import threading
 from typing import Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _now_ist() -> str:
+    """Return current time as ISO-8601 string with +05:30 offset."""
+    return datetime.now(IST).isoformat()
 
 import notion_client
 
@@ -71,7 +78,7 @@ class NotionLogger:
             "Stop Loss": {"number": round(stop_loss, 2) if stop_loss else None},
             "Target Price": {"number": round(target_price, 2) if target_price else None},
             "Strategy": {"select": {"name": strategy}},
-            "Entry Time": {"date": {"start": datetime.now().isoformat()}},
+            "Entry Time": {"date": {"start": _now_ist()}},
             "Reason": {"rich_text": [{"text": {"content": reason}}]},
             "Mode": {"select": {"name": mode.upper()}},
         }
@@ -143,14 +150,18 @@ class NotionLogger:
           Entry Price   → India VIX value
           Quantity      → Pulse score
           Reason        → Verdict summary + key signals + top headlines
+
+        Called synchronously (not via _run_async) because premarket_pulse.py
+        is a short-lived script that exits immediately after — a daemon thread
+        would be killed before the API call completes.
         """
         if not self.enabled:
             return
-        self._run_async(self._create_pulse_page, verdict, score, vix, reasons, headlines)
+        self._safe_execute(self._create_pulse_page, verdict, score, vix, reasons, headlines)
 
     def _create_pulse_page(self, verdict: str, score: int, vix: float | None,
                            reasons: list[str], headlines: list[tuple[str, str]]):
-        date_str = datetime.now().strftime("%Y-%m-%d")
+        date_str = datetime.now(IST).strftime("%Y-%m-%d")
 
         # Strip ANSI escape codes from reason strings
         import re
@@ -177,7 +188,7 @@ class NotionLogger:
             "Mode":     {"select":    {"name": "SYSTEM"}},
             "Quantity": {"number":    score},
             "Reason":   {"rich_text": [{"text": {"content": summary}}]},
-            "Entry Time": {"date":    {"start": datetime.now().isoformat()}},
+            "Entry Time": {"date":    {"start": _now_ist()}},
         }
         if vix is not None:
             properties["Entry Price"] = {"number": round(vix, 2)}
