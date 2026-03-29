@@ -95,7 +95,7 @@ class NotionLogger:
         self._run_async(self._update_exit_page, trade_id, exit_price, pnl, pnl_pct, 
                         exit_reason, exit_time, hold_days)
 
-    def _update_exit_page(self, trade_id: int, exit_price: float, pnl: float, pnl_pct: float, 
+    def _update_exit_page(self, trade_id: int, exit_price: float, pnl: float, pnl_pct: float,
                           exit_reason: str, exit_time: str, hold_days: int):
         """Find the page by ID and update it."""
         # 1. Query the database to find the row with the matching ID
@@ -103,17 +103,17 @@ class NotionLogger:
             database_id=self.db_id,
             filter={"property": "ID", "title": {"equals": f"#{trade_id}"}}
         )
-        
+
         if not results.get("results"):
             logger.warning(f"Could not find trade #{trade_id} in Notion database")
             return
-            
+
         page_id = results["results"][0]["id"]
-        
+
         # 2. Update the page
         status = "WIN" if pnl > 0 else "LOSS"
         color = "green" if pnl > 0 else "red"
-        
+
         properties = {
             "Status": {"select": {"name": status, "color": color}},
             "Exit Price": {"number": round(exit_price, 2)},
@@ -123,6 +123,67 @@ class NotionLogger:
             "Exit Time": {"date": {"start": exit_time}},
             "Hold Days": {"number": hold_days},
         }
-        
+
         self.client.pages.update(page_id=page_id, properties=properties)
+
+    # ── Pre-Market Pulse ───────────────────────────────────────────────────
+
+    def log_pulse(self, verdict: str, score: int, vix: float | None,
+                  reasons: list[str], headlines: list[tuple[str, str]]):
+        """
+        Logs the daily pre-market pulse verdict to the Notion trades DB.
+        Uses the existing schema — no new database required.
+
+        Mapping:
+          ID            → PULSE-YYYY-MM-DD
+          Stock         → MARKET-PULSE
+          Status        → GO / CAUTION / NO-GO  (colour-coded)
+          Strategy      → PULSE
+          Mode          → SYSTEM
+          Entry Price   → India VIX value
+          Quantity      → Pulse score
+          Reason        → Verdict summary + key signals + top headlines
+        """
+        if not self.enabled:
+            return
+        self._run_async(self._create_pulse_page, verdict, score, vix, reasons, headlines)
+
+    def _create_pulse_page(self, verdict: str, score: int, vix: float | None,
+                           reasons: list[str], headlines: list[tuple[str, str]]):
+        date_str = datetime.now().strftime("%Y-%m-%d")
+
+        # Strip ANSI escape codes from reason strings
+        import re
+        _ansi = re.compile(r"\033\[[0-9;]*m")
+        clean_reasons = [_ansi.sub("", r) for r in reasons]
+
+        # Build a compact summary for the Reason field (2000 char Notion limit)
+        top_headlines = [f"[{src}] {hl}" for src, hl in headlines[:6]]
+        summary_parts = clean_reasons + ["", "Headlines:"] + top_headlines
+        summary = "\n".join(summary_parts)[:1999]
+
+        if "NO-GO" in verdict:
+            status, color = "NO-GO",   "red"
+        elif "CAUTION" in verdict:
+            status, color = "CAUTION", "yellow"
+        else:
+            status, color = "GO",      "green"
+
+        properties = {
+            "ID":       {"title":     [{"text": {"content": f"PULSE-{date_str}"}}]},
+            "Stock":    {"rich_text": [{"text": {"content": "MARKET-PULSE"}}]},
+            "Status":   {"select":    {"name": status, "color": color}},
+            "Strategy": {"select":    {"name": "PULSE"}},
+            "Mode":     {"select":    {"name": "SYSTEM"}},
+            "Quantity": {"number":    score},
+            "Reason":   {"rich_text": [{"text": {"content": summary}}]},
+            "Entry Time": {"date":    {"start": datetime.now().isoformat()}},
+        }
+        if vix is not None:
+            properties["Entry Price"] = {"number": round(vix, 2)}
+
+        self.client.pages.create(
+            parent={"database_id": self.db_id},
+            properties=properties,
+        )
 

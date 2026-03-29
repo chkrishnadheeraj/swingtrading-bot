@@ -8,12 +8,32 @@ This document outlines the daily routine required to keep the bot functioning op
 
 *Important: The bot's logic is designed for active market hours (Mon-Fri). You do not need to run the engine on weekends.*
 
-### 1. Global Market & News Check (8:30 AM - 8:45 AM)
-*Momentum gets crushed in highly volatile or crashing markets. Before turning the bot on, perform a manual pulse check.*
-1. Check **India VIX** (Volatility Index). If VIX spikes > 18-20, momentum edge deteriorates.
-2. Check **Global Cues** (US markets overnight, SGX/Gift Nifty).
-3. Check **Macro News** (RBI rate decisions, global geopolitical shocks).
-> 🛑 **Rule:** If global news or markets are highly unstable, **DO NOT run the bot for the day**. Wait for a clean, stable trend.
+### 1. Pre-Market Pulse Check (8:30 AM - 8:45 AM)
+*Momentum gets crushed in highly volatile or crashing markets. Run the automated pulse script first — it makes the go/no-go decision for you.*
+
+```bash
+source venv/bin/activate
+python scripts/premarket_pulse.py
+```
+
+The script checks and scores:
+| Signal | Source | Hard NO-GO threshold |
+|---|---|---|
+| India VIX | yfinance `^INDIAVIX` | VIX > 25 |
+| Nifty 50 spot | yfinance `^NSEI` | — |
+| US Indices (S&P, Nasdaq, Nikkei, Hang Seng, FTSE) | yfinance | S&P < -2% |
+| Commodities (Crude, Gold, Silver, Nat Gas, Copper) | yfinance futures | Crude > +3% |
+| Forex (USD/INR, Dollar Index) | yfinance | Rupee > +0.5% |
+| US 10Y Treasury Yield | yfinance `^TNX` | — |
+| OSINT News Headlines | ET / BS / Reuters / LiveMint RSS | Keyword scan |
+
+**Reading the output:**
+- 🟢 **GO (score ≥ 3)** — proceed normally
+- 🟡 **CAUTION (score 1–2)** — run paper mode only, reduce size
+- 🟠 **CAUTION (score -1 to 0)** — high uncertainty, skip the day
+- 🔴 **NO-GO (score < -1)** — do not run the bot
+
+> 🛑 **Rule:** If the pulse prints NO-GO or CAUTION, **do not start the bot**. Wait for a clean, stable trend day.
 
 ### 2. Pre-Market Automation (8:45 AM - 9:00 AM)
 *The Kite Connect API requires a daily login to issue a fresh access token. This must be done every morning before the market opens.*
