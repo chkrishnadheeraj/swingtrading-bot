@@ -4,8 +4,14 @@ This is your most valuable asset after your capital.
 """
 
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Optional
+
+IST = timezone(timedelta(hours=5, minutes=30))
+
+def _now_ist() -> str:
+    """Return current IST datetime as ISO-8601 string with +05:30 offset."""
+    return datetime.now(IST).isoformat()
 from config import settings
 from utils.logger import get_logger
 from utils.notion_logger import NotionLogger
@@ -87,7 +93,7 @@ class TradeJournal:
              quantity, confidence, reason, entry_time, mode)
             VALUES (?, 'BUY', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (stock, strategy, entry_price, stop_loss, target_price,
-             quantity, confidence, reason, datetime.now().isoformat(), mode),
+             quantity, confidence, reason, _now_ist(), mode),
         )
         trade_id = cursor.lastrowid
         conn.commit()
@@ -127,7 +133,7 @@ class TradeJournal:
 
         hold_days = 0
         if entry_time:
-            hold_days = (datetime.now() - datetime.fromisoformat(entry_time)).days
+            hold_days = (datetime.now(IST) - datetime.fromisoformat(entry_time).astimezone(IST)).days
 
         # Tax & charges breakdown
         tax_data       = calc_net_pnl(entry_price, exit_price, quantity)
@@ -144,7 +150,7 @@ class TradeJournal:
             WHERE id = ?""",
             (exit_price, pnl, pnl_pct,
              gross_pnl, total_charges, tax_deducted, net_in_hand,
-             exit_reason, datetime.now().isoformat(), hold_days, trade_id),
+             exit_reason, _now_ist(), hold_days, trade_id),
         )
         conn.commit()
         conn.close()
@@ -152,7 +158,7 @@ class TradeJournal:
         # Background sync to Notion
         self.notion.log_exit(
             trade_id=trade_id, exit_price=exit_price, pnl=pnl, pnl_pct=pnl_pct,
-            exit_reason=exit_reason, exit_time=datetime.now().isoformat(), hold_days=hold_days
+            exit_reason=exit_reason, exit_time=_now_ist(), hold_days=hold_days
         )
 
         emoji = "+" if pnl >= 0 else ""
