@@ -130,8 +130,27 @@ class TradingEngine:
         # Filter out stocks we already have positions in
         new_signals = [s for s in all_signals if s.stock not in self.positions]
 
+        # Log signals skipped due to an existing open position
+        for s in [s for s in all_signals if s.stock in self.positions]:
+            self.journal.log_signal(
+                stock=s.stock, strategy=s.strategy, entry_price=s.entry_price,
+                stop_loss=s.stop_loss, target_price=s.target_price,
+                confidence=s.confidence, reason=s.reason,
+                status="SKIPPED_EXISTING", mode=self.mode,
+            )
+
         # Process top signals (limited by available position slots)
         available_slots = settings.MAX_POSITIONS - len(self.positions)
+
+        # Log signals skipped because all position slots are full
+        for s in new_signals[available_slots:]:
+            self.journal.log_signal(
+                stock=s.stock, strategy=s.strategy, entry_price=s.entry_price,
+                stop_loss=s.stop_loss, target_price=s.target_price,
+                confidence=s.confidence, reason=s.reason,
+                status="SKIPPED_NO_SLOT", mode=self.mode,
+            )
+
         for signal in new_signals[:available_slots]:
             self._process_signal(signal)
             
@@ -147,6 +166,14 @@ class TradingEngine:
 
         if quantity <= 0:
             logger.info(f"Skipping {signal.stock}: position size = 0")
+            self.journal.log_signal(
+                stock=signal.stock, strategy=signal.strategy, entry_price=signal.entry_price,
+                stop_loss=signal.stop_loss, target_price=signal.target_price,
+                confidence=signal.confidence, reason=signal.reason,
+                status="REJECTED_ZERO_QTY",
+                reject_reason="Position size calculated as 0 (insufficient capital/risk)",
+                mode=self.mode,
+            )
             return
 
         # Override max position if specified
@@ -165,13 +192,19 @@ class TradingEngine:
 
         if not approved:
             logger.info(f"Trade rejected for {signal.stock}: {reason}")
+            self.journal.log_signal(
+                stock=signal.stock, strategy=signal.strategy, entry_price=signal.entry_price,
+                stop_loss=signal.stop_loss, target_price=signal.target_price,
+                confidence=signal.confidence, reason=signal.reason,
+                status="REJECTED_RISK", reject_reason=reason, mode=self.mode,
+            )
             return
 
         # Execute
         self._execute_entry(signal, quantity)
 
-    def _execute_entry(self, signal: Signal, quantity: int):
-        """Execute a trade entry (paper or live)."""
+    def _execute_entry(self, signal: Signal, quantity: int) -> Optional[int]:
+        """Execute a trade entry (paper or live). Returns trade_id or None on failure."""
         if self.mode == "live" and self.broker:
             try:
                 order_id = self.broker.buy(
@@ -208,6 +241,14 @@ class TradingEngine:
             mode=self.mode,
         )
 
+        # Record signal as executed (links signal to trade_id)
+        self.journal.log_signal(
+            stock=signal.stock, strategy=signal.strategy, entry_price=signal.entry_price,
+            stop_loss=signal.stop_loss, target_price=signal.target_price,
+            confidence=signal.confidence, reason=signal.reason,
+            status="EXECUTED", trade_id=trade_id, mode=self.mode,
+        )
+
         # Track position
         self.positions[signal.stock] = OpenPosition(
             trade_id=trade_id,
@@ -232,6 +273,8 @@ class TradingEngine:
             target=signal.target_price,
             reason=signal.reason,
         )
+
+        return trade_id
 
     def _check_exits(self):
         """Check all open positions for exit signals."""
@@ -333,7 +376,9 @@ class TradingEngine:
 
     def end_of_day(self):
         """End-of-day housekeeping."""
-        status = self.risk_manager.get_status()
+        status  = self.risk_manager.get_status()
+        summary = self.journal.print_daily_summary(risk_status=status, mode=self.mode)
+        self.journal.notion.log_daily_summary(summary)   # rich Notion page
         self.alerts.daily_summary(status)
         self.journal.print_summary(days=30, mode=self.mode)
         self.risk_manager.reset_daily()
