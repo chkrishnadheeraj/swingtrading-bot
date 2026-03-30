@@ -117,12 +117,15 @@ class TradingEngine:
             try:
                 signals = strategy.scan(settings.WATCHLIST)
                 all_signals.extend(signals)
+            except ConnectionError as e:
+                logger.error(f"Network error during {strategy.name()} scan: {e}")
+                return False  # Indicate scan failed due to network
             except Exception as e:
                 logger.error(f"Strategy {strategy.name()} scan failed: {e}")
 
         if not all_signals:
             logger.info("No signals generated this cycle")
-            return
+            return True
 
         # Filter out stocks we already have positions in
         new_signals = [s for s in all_signals if s.stock not in self.positions]
@@ -131,6 +134,8 @@ class TradingEngine:
         available_slots = settings.MAX_POSITIONS - len(self.positions)
         for signal in new_signals[:available_slots]:
             self._process_signal(signal)
+            
+        return True
 
     def _process_signal(self, signal: Signal):
         """Validate and execute a single signal."""
@@ -231,12 +236,14 @@ class TradingEngine:
     def _check_exits(self):
         """Check all open positions for exit signals."""
         stocks_to_close = []
+        failed_fetches = 0
 
         for stock, pos in self.positions.items():
             try:
                 # Get current price (in paper mode, use yfinance)
                 current_price = self._get_current_price(stock)
                 if current_price is None:
+                    failed_fetches += 1
                     continue
 
                 # Update highest price for trailing SL
@@ -260,12 +267,20 @@ class TradingEngine:
 
             except Exception as e:
                 logger.error(f"Error checking exit for {stock}: {e}")
+                failed_fetches += 1
 
         # Remove closed positions
         for stock in stocks_to_close:
             del self.positions[stock]
 
         self.risk_manager.update_position_count(len(self.positions))
+
+        # If we have positions but all of them failed to fetch a price, network is likely heavily down.
+        if len(self.positions) > 0 and failed_fetches == len(self.positions):
+            logger.error("Failed to fetch current price for all open positions. Network may be down.")
+            return False
+            
+        return True
 
     def _execute_exit(self, pos: OpenPosition, exit_price: float, reason: str):
         """Execute a trade exit."""

@@ -79,12 +79,42 @@ def main():
             logger.info("Aborted. Use --mode paper for paper trading.")
             return
 
+    def safe_scan_cycle():
+        max_retries = 12  # Retry for up to 1 hour
+        for attempt in range(max_retries):
+            try:
+                success = engine.run_scan_cycle()
+                if success is not False:  # None or True means invalid but not network drop, or valid
+                    return
+            except Exception as e:
+                logger.error(f"Unhandled error in scan cycle: {e}")
+            
+            logger.warning(f"Scan failed due to network drop. Retrying in 5 mins... ({attempt+1}/{max_retries})")
+            time.sleep(300)
+            
+        logger.error("Scan failed completely after maximum retries.")
+
+    def safe_exit_check():
+        max_retries = 12
+        for attempt in range(max_retries):
+            try:
+                success = engine._check_exits()
+                if success is not False:
+                    return
+            except Exception as e:
+                logger.error(f"Unhandled error in exit check: {e}")
+            
+            logger.warning(f"Exit check failed due to network drop. Retrying in 5 mins... ({attempt+1}/{max_retries})")
+            time.sleep(300)
+            
+        logger.error("Exit check failed completely after maximum retries.")
+
     # Schedule daily scan
     # Pre-market scan at 9:00 AM
-    schedule.every().day.at(settings.PRE_MARKET_SCAN).do(engine.run_scan_cycle)
+    schedule.every().day.at(settings.PRE_MARKET_SCAN).do(safe_scan_cycle)
 
     # Mid-day exit check at 1:00 PM
-    schedule.every().day.at("13:00").do(engine._check_exits)
+    schedule.every().day.at("13:00").do(safe_exit_check)
 
     # End-of-day at 3:45 PM
     schedule.every().day.at("15:45").do(engine.end_of_day)

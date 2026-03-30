@@ -45,17 +45,28 @@ class MomentumStrategy(BaseStrategy):
         """
         Scan all stocks in watchlist for momentum signals.
         Returns list of BUY signals ranked by confidence.
+        Raises ConnectionError if > 50% of symbols fail to return data.
         """
         signals = []
+        missing_data_count = 0
 
         for stock in watchlist:
             try:
-                signal = self._analyze_stock(stock)
+                df = self._get_historical_data(stock)
+                if df is None or df.empty:
+                    missing_data_count += 1
+                    continue
+                
+                signal = self._analyze_stock(stock, df=df)
                 if signal:
                     signals.append(signal)
             except Exception as e:
                 logger.warning(f"Error analyzing {stock}: {e}")
                 continue
+
+        # If data fetch failed for more than 50% of the watchlist, it's a network issue
+        if len(watchlist) > 0 and missing_data_count > max(1, len(watchlist) * 0.5):
+            raise ConnectionError(f"Data unavailable for {missing_data_count}/{len(watchlist)} symbols. Likely network drop.")
 
         # Sort by confidence (highest first)
         signals.sort(key=lambda s: s.confidence, reverse=True)
@@ -67,13 +78,15 @@ class MomentumStrategy(BaseStrategy):
 
         return signals
 
-    def _analyze_stock(self, stock: str) -> Optional[Signal]:
+    def _analyze_stock(self, stock: str, df: Optional[pd.DataFrame] = None) -> Optional[Signal]:
         """
         Analyze a single stock for momentum entry signal.
         Returns Signal if criteria met, None otherwise.
         """
-        # Fetch historical data
-        df = self._get_historical_data(stock)
+        # Fetch historical data if not provided
+        if df is None:
+            df = self._get_historical_data(stock)
+            
         # Need enough bars for trend EMA (50) + a few warmup bars
         min_bars = self.params.get("trend_ema", 50) + 10
         if df is None or len(df) < min_bars:
