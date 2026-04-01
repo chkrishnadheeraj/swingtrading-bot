@@ -198,3 +198,152 @@ class NotionLogger:
             properties=properties,
         )
 
+    # ── Daily Summary ──────────────────────────────────────────────────────
+
+    def log_daily_summary(self, summary: dict) -> None:
+        """
+        Creates a rich Notion page for the end-of-day trade summary.
+        Called synchronously (like log_pulse) so it completes before process exit.
+        """
+        if not self.enabled:
+            return
+        self._safe_execute(self._create_summary_page, summary)
+
+    def _create_summary_page(self, summary: dict) -> None:
+        """Build and create the daily summary page with rich block content."""
+        date_str  = datetime.now(IST).strftime("%Y-%m-%d")
+        date_disp = datetime.now(IST).strftime("%d %b %Y")
+        pnl       = summary.get("daily_pnl", 0)
+        capital   = summary.get("capital", 0)
+        drawdown  = summary.get("drawdown", 0)
+        mode      = summary.get("mode", "paper")
+        signals   = summary.get("signals", {})
+        entries   = summary.get("entries", [])
+        exits     = summary.get("exits", [])
+        open_pos  = summary.get("open", [])
+
+        status = "WIN" if pnl > 0 else ("LOSS" if pnl < 0 else "NEUTRAL")
+        color  = "green" if pnl > 0 else ("red" if pnl < 0 else "gray")
+        pnl_sign = "+" if pnl >= 0 else ""
+
+        overview = (
+            f"Scanned {signals.get('total_scanned', 0)} signals | "
+            f"Executed {len(signals.get('executed', []))} | "
+            f"P&L {pnl_sign}₹{pnl:,.0f}"
+        )
+
+        properties = {
+            "ID":         {"title":     [{"text": {"content": f"SUMMARY-{date_str}"}}]},
+            "Stock":      {"rich_text": [{"text": {"content": "DAILY-SUMMARY"}}]},
+            "Status":     {"select":    {"name": status, "color": color}},
+            "Strategy":   {"select":    {"name": "SUMMARY"}},
+            "Mode":       {"select":    {"name": mode.upper()}},
+            "Entry Time": {"date":      {"start": _now_ist()}},
+            "P&L":        {"number":    round(pnl, 2)},
+            "Reason":     {"rich_text": [{"text": {"content": overview}}]},
+        }
+
+        # ── Block helpers ──────────────────────────────────────────────────
+
+        def _h(level: int, text: str) -> dict:
+            return {"object": "block", "type": f"heading_{level}",
+                    f"heading_{level}": {"rich_text": [{"type": "text", "text": {"content": text}}]}}
+
+        def _bullet(text: str) -> dict:
+            return {"object": "block", "type": "bulleted_list_item",
+                    "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": text}}]}}
+
+        def _para(text: str) -> dict:
+            return {"object": "block", "type": "paragraph",
+                    "paragraph": {"rich_text": [{"type": "text", "text": {"content": text}}]}}
+
+        def _divider() -> dict:
+            return {"object": "block", "type": "divider", "divider": {}}
+
+        def _callout(text: str, emoji: str = "💰") -> dict:
+            return {"object": "block", "type": "callout",
+                    "callout": {"rich_text": [{"type": "text", "text": {"content": text}}],
+                                "icon": {"type": "emoji", "emoji": emoji}}}
+
+        # ── Build page body ────────────────────────────────────────────────
+
+        blocks = [
+            _h(1, f"Daily Trade Summary — {date_disp}"),
+            _callout(
+                f"Capital: ₹{capital:,.0f}  |  P&L: {pnl_sign}₹{pnl:,.0f}"
+                f"  |  Drawdown: {drawdown:.1%}  |  Mode: {mode.upper()}"
+            ),
+            _divider(),
+        ]
+
+        # Executed trades
+        exec_count = len(entries) + len(exits)
+        blocks.append(_h(2, f"✅ Executed Today ({exec_count})"))
+        if entries:
+            blocks.append(_para("Entries:"))
+            for e in entries:
+                blocks.append(_bullet(
+                    f"{e['stock']} — BUY ₹{e['entry_price']:,.2f} x{e['quantity']}"
+                    f" | SL ₹{e['stop_loss']:,.2f} | Target ₹{e['target_price']:,.2f}"
+                    f" | {e['strategy']}"
+                ))
+        if exits:
+            blocks.append(_para("Exits:"))
+            for x in exits:
+                pnl_s = "+" if x["pnl"] >= 0 else ""
+                blocks.append(_bullet(
+                    f"{x['stock']} — CLOSED ₹{x['entry_price']:,.2f}→₹{x['exit_price']:,.2f}"
+                    f" | P&L: {pnl_s}₹{x['pnl']:,.0f} | {x['exit_reason']}"
+                ))
+        if not entries and not exits:
+            blocks.append(_para("No trades executed today."))
+
+        # Open positions
+        blocks.append(_divider())
+        blocks.append(_h(2, f"📂 Open Positions ({len(open_pos)})"))
+        if open_pos:
+            for p in open_pos:
+                blocks.append(_bullet(
+                    f"{p['stock']} — Entry ₹{p['entry_price']:,.2f}"
+                    f" | SL ₹{p['stop_loss']:,.2f} | Target ₹{p['target_price']:,.2f}"
+                    f" | x{p['quantity']}"
+                ))
+        else:
+            blocks.append(_para("No open positions."))
+
+        # Signal funnel
+        blocks.append(_divider())
+        blocks.append(_h(2, "🔍 Signal Funnel"))
+        total   = signals.get("total_scanned", 0)
+        n_exec  = len(signals.get("executed", []))
+        n_skip  = len(signals.get("skipped_existing", [])) + len(signals.get("skipped_no_slot", []))
+        n_rej   = len(signals.get("rejected", []))
+        blocks.append(_para(
+            f"Scanned: {total}  |  Executed: {n_exec}"
+            f"  |  Skipped: {n_skip}  |  Rejected: {n_rej}"
+        ))
+
+        if signals.get("skipped_existing"):
+            blocks.append(_h(3, "Skipped — Existing Position Open"))
+            for s in signals["skipped_existing"]:
+                blocks.append(_bullet(f"{s['stock']} @ ₹{s['entry_price']:,.2f}"))
+
+        if signals.get("skipped_no_slot"):
+            blocks.append(_h(3, "Skipped — No Position Slot Available"))
+            for s in signals["skipped_no_slot"]:
+                blocks.append(_bullet(f"{s['stock']} @ ₹{s['entry_price']:,.2f}"))
+
+        if signals.get("rejected"):
+            blocks.append(_h(3, "❌ Rejected"))
+            for r in signals["rejected"]:
+                blocks.append(_bullet(f"{r['stock']} — {r['reject_reason']}"))
+
+        if total == 0:
+            blocks.append(_para("No signals generated today."))
+
+        self.client.pages.create(
+            parent={"database_id": self.db_id},
+            properties=properties,
+            children=blocks,
+        )
+
