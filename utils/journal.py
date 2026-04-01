@@ -5,7 +5,7 @@ This is your most valuable asset after your capital.
 
 import sqlite3
 from datetime import datetime, timezone, timedelta
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -69,6 +69,23 @@ class TradeJournal:
                 conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {coltype}")
             except sqlite3.OperationalError:
                 pass  # column already exists
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS signals (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                stock         TEXT    NOT NULL,
+                strategy      TEXT,
+                entry_price   REAL,
+                stop_loss     REAL,
+                target_price  REAL,
+                confidence    REAL,
+                reason        TEXT,
+                status        TEXT    NOT NULL,
+                reject_reason TEXT,
+                trade_id      INTEGER,
+                scan_time     TEXT    NOT NULL,
+                mode          TEXT    DEFAULT 'paper'
+            )
+        """)
         conn.commit()
         conn.close()
         logger.info(f"Trade journal initialized at {self.db_path}")
@@ -222,3 +239,198 @@ class TradeJournal:
         logger.info(f"  Best trade:    ₹{stats['best_trade']:+,.0f}")
         logger.info(f"  Worst trade:   ₹{stats['worst_trade']:+,.0f}")
         logger.info(f"{'='*50}\n")
+
+    # ── Daily Summary ──────────────────────────────────────────────────────
+
+    def log_signal(
+        self,
+        stock: str,
+        strategy: str,
+        entry_price: float,
+        stop_loss: float,
+        target_price: float,
+        confidence: float,
+        reason: str,
+        status: str,
+        reject_reason: Optional[str] = None,
+        trade_id: Optional[int] = None,
+        mode: str = "paper",
+    ) -> None:
+        """Persist a generated signal and its outcome to the signals table."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.execute(
+                """INSERT INTO signals
+                (stock, strategy, entry_price, stop_loss, target_price,
+                 confidence, reason, status, reject_reason, trade_id, scan_time, mode)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (stock, strategy, entry_price, stop_loss, target_price,
+                 confidence, reason, status, reject_reason, trade_id, _now_ist(), mode),
+            )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.error(f"Failed to log signal for {stock}: {e}")
+
+    def get_today_signals(self, mode: str = "paper") -> Dict[str, Any]:
+        """Return today's signals grouped by status (IST date boundary)."""
+        conn = sqlite3.connect(self.db_path)
+        rows = conn.execute(
+            """SELECT stock, strategy, entry_price, stop_loss, target_price,
+                      confidence, reason, status, reject_reason, trade_id, scan_time
+               FROM   signals
+               WHERE  mode = ?
+               AND    DATE(scan_time) = DATE('now', '+5:30')
+               ORDER  BY scan_time ASC""",
+            (mode,),
+        ).fetchall()
+        conn.close()
+
+        keys = ("stock", "strategy", "entry_price", "stop_loss", "target_price",
+                "confidence", "reason", "status", "reject_reason", "trade_id", "scan_time")
+        executed, skipped_existing, skipped_no_slot, rejected = [], [], [], []
+        for row in rows:
+            r = dict(zip(keys, row))
+            if r["status"] == "EXECUTED":
+                executed.append(r)
+            elif r["status"] == "SKIPPED_EXISTING":
+                skipped_existing.append(r)
+            elif r["status"] == "SKIPPED_NO_SLOT":
+                skipped_no_slot.append(r)
+            else:
+                rejected.append(r)
+
+        return {
+            "executed":         executed,
+            "skipped_existing": skipped_existing,
+            "skipped_no_slot":  skipped_no_slot,
+            "rejected":         rejected,
+            "total_scanned":    len(rows),
+        }
+
+    def get_today_trades(self, mode: str = "paper") -> Dict[str, List]:
+        """Return today's trade entries, exits, and currently open positions."""
+        conn = sqlite3.connect(self.db_path)
+
+        entries = conn.execute(
+            """SELECT stock, entry_price, stop_loss, target_price, quantity, strategy
+               FROM   trades
+               WHERE  action = 'BUY' AND mode = ?
+               AND    DATE(entry_time) = DATE('now', '+5:30')""",
+            (mode,),
+        ).fetchall()
+
+        exits = conn.execute(
+            """SELECT stock, entry_price, exit_price, pnl, exit_reason
+               FROM   trades
+               WHERE  action = 'CLOSED' AND mode = ?
+               AND    DATE(exit_time) = DATE('now', '+5:30')""",
+            (mode,),
+        ).fetchall()
+
+        open_pos = conn.execute(
+            """SELECT stock, entry_price, stop_loss, target_price, quantity
+               FROM   trades
+               WHERE  action = 'BUY' AND mode = ?
+               AND    exit_time IS NULL""",
+            (mode,),
+        ).fetchall()
+
+        conn.close()
+
+        return {
+            "entries": [dict(zip(("stock","entry_price","stop_loss","target_price","quantity","strategy"), r)) for r in entries],
+            "exits":   [dict(zip(("stock","entry_price","exit_price","pnl","exit_reason"), r)) for r in exits],
+            "open":    [dict(zip(("stock","entry_price","stop_loss","target_price","quantity"), r)) for r in open_pos],
+        }
+
+    def print_daily_summary(self, risk_status: dict, mode: str = "paper") -> dict:
+        """Print a rich daily summary and return the data dict for Notion/Telegram."""
+        signals = self.get_today_signals(mode)
+        trades  = self.get_today_trades(mode)
+
+        capital   = risk_status.get("capital", 0)
+        daily_pnl = risk_status.get("daily_pnl", 0)
+        drawdown  = risk_status.get("drawdown", 0)
+        date_str  = datetime.now(IST).strftime("%d %b %Y")
+
+        sep = "=" * 60
+        logger.info(f"\n{sep}")
+        logger.info(f"  DAILY TRADE SUMMARY — {date_str} ({mode.upper()} MODE)")
+        logger.info(sep)
+
+        # Entries
+        entries = trades["entries"]
+        logger.info(f"\nENTRIES TODAY ({len(entries)})")
+        if entries:
+            for e in entries:
+                logger.info(
+                    f"  {e['stock']:<12} BUY ₹{e['entry_price']:,.2f} x{e['quantity']}"
+                    f" | SL ₹{e['stop_loss']:,.2f} | T ₹{e['target_price']:,.2f}"
+                    f" | {e['strategy']}"
+                )
+        else:
+            logger.info("  (none)")
+
+        # Exits
+        exits = trades["exits"]
+        logger.info(f"\nEXITS TODAY ({len(exits)})")
+        if exits:
+            for x in exits:
+                pnl_sign = "+" if x["pnl"] >= 0 else ""
+                logger.info(
+                    f"  {x['stock']:<12} ₹{x['entry_price']:,.2f}→₹{x['exit_price']:,.2f}"
+                    f" | P&L: {pnl_sign}₹{x['pnl']:,.0f} | {x['exit_reason']}"
+                )
+        else:
+            logger.info("  (none)")
+
+        # Open positions
+        open_pos = trades["open"]
+        logger.info(f"\nOPEN POSITIONS ({len(open_pos)})")
+        if open_pos:
+            for p in open_pos:
+                logger.info(
+                    f"  {p['stock']:<12} Entry ₹{p['entry_price']:,.2f}"
+                    f" | SL ₹{p['stop_loss']:,.2f} | Target ₹{p['target_price']:,.2f}"
+                    f" | x{p['quantity']}"
+                )
+        else:
+            logger.info("  (none)")
+
+        # Non-executed signals
+        total_not_exec = (len(signals["skipped_existing"]) +
+                          len(signals["skipped_no_slot"]) +
+                          len(signals["rejected"]))
+        logger.info(f"\nSIGNALS NOT EXECUTED ({total_not_exec})")
+        if signals["skipped_existing"]:
+            names = ", ".join(s["stock"] for s in signals["skipped_existing"])
+            logger.info(f"  SKIPPED (existing position) : {names}")
+        if signals["skipped_no_slot"]:
+            names = ", ".join(s["stock"] for s in signals["skipped_no_slot"])
+            logger.info(f"  SKIPPED (no slot)           : {names}")
+        if signals["rejected"]:
+            logger.info("  REJECTED:")
+            for r in signals["rejected"]:
+                logger.info(f"    {r['stock']:<12} — {r['reject_reason']}")
+        if total_not_exec == 0 and signals["total_scanned"] == 0:
+            logger.info("  (no signals generated today)")
+
+        pnl_sign = "+" if daily_pnl >= 0 else ""
+        logger.info(
+            f"\nCapital: ₹{capital:,.0f} | Daily P&L: {pnl_sign}₹{daily_pnl:,.0f}"
+            f" | Drawdown: {drawdown:.1%}"
+        )
+        logger.info(f"{sep}\n")
+
+        return {
+            "date":      date_str,
+            "mode":      mode,
+            "capital":   capital,
+            "daily_pnl": daily_pnl,
+            "drawdown":  drawdown,
+            "entries":   entries,
+            "exits":     exits,
+            "open":      open_pos,
+            "signals":   signals,
+        }
